@@ -401,6 +401,8 @@ impl Session {
                 trace!("channel_data");
                 let channel_num = map_err!(ChannelId::decode(&mut r))?;
                 let data = map_err!(Bytes::decode(&mut r))?;
+
+                // Adjust window FIRST (SSH protocol requirement)
                 let target = self.common.config.window_size;
                 if let Some(ref mut enc) = self.common.encrypted {
                     if enc.adjust_window_size(channel_num, &data, target)? {
@@ -412,12 +414,13 @@ impl Session {
                     }
                 }
 
+                // Send to application - uses BLOCKING send
+                // This is safe now because application (gputerraform) doesn't block
+                // when forwarding to client (uses tokio::spawn)
                 if let Some(chan) = self.channels.get(&channel_num) {
-                    let _ = chan
-                        .send(ChannelMsg::Data {
-                            data: CryptoVec::from_slice(&data),
-                        })
-                        .await;
+                    let _ = chan.send(ChannelMsg::Data {
+                        data: CryptoVec::from_slice(&data),
+                    }).await;
                 }
 
                 client.data(channel_num, &data, self).await
@@ -427,6 +430,8 @@ impl Session {
                 let channel_num = map_err!(ChannelId::decode(&mut r))?;
                 let extended_code = map_err!(u32::decode(&mut r))?;
                 let data = map_err!(Bytes::decode(&mut r))?;
+
+                // Adjust window FIRST (SSH protocol requirement)
                 let target = self.common.config.window_size;
                 if let Some(ref mut enc) = self.common.encrypted {
                     if enc.adjust_window_size(channel_num, &data, target)? {
@@ -438,13 +443,14 @@ impl Session {
                     }
                 }
 
+                // Send to application - uses BLOCKING send
+                // This is safe now because application (gputerraform) doesn't block
+                // when forwarding to client (uses tokio::spawn)
                 if let Some(chan) = self.channels.get(&channel_num) {
-                    let _ = chan
-                        .send(ChannelMsg::ExtendedData {
-                            ext: extended_code,
-                            data: CryptoVec::from_slice(&data),
-                        })
-                        .await;
+                    let _ = chan.send(ChannelMsg::ExtendedData {
+                        ext: extended_code,
+                        data: CryptoVec::from_slice(&data),
+                    }).await;
                 }
 
                 client

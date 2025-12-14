@@ -78,12 +78,25 @@ where
     }
 
     fn poll_writable(&mut self, cx: &mut Context<'_>, buf_len: usize) -> Poll<NonZeroUsize> {
-        let window_size = self.window_size.clone();
-        let window_size_fut = self
-            .window_size_fut
-            .get_or_insert_with(|| Box::pin(window_size.lock_owned()));
-        let mut window_size = ready!(window_size_fut.poll_unpin(cx));
-        self.window_size_fut.take();
+        // Fast path: try to lock without blocking to reduce contention
+        let mut window_size = if let Some(fut) = self.window_size_fut.as_mut() {
+            // Already waiting on lock
+            let guard = ready!(fut.poll_unpin(cx));
+            self.window_size_fut.take();
+            guard
+        } else if let Ok(guard) = self.window_size.clone().try_lock_owned() {
+            // Fast path: got lock immediately
+            guard
+        } else {
+            // Slow path: need to wait for lock
+            let window_size = self.window_size.clone();
+            let window_size_fut = self
+                .window_size_fut
+                .get_or_insert_with(|| Box::pin(window_size.lock_owned()));
+            let guard = ready!(window_size_fut.poll_unpin(cx));
+            self.window_size_fut.take();
+            guard
+        };
 
         let writable = (self.max_packet_size).min(*window_size).min(buf_len as u32) as usize;
 
@@ -176,7 +189,12 @@ where
         Poll::Ready(self.handle_write_result(r))
     }
 
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        // Ensure any pending send completes before flushing
+        if let Some(send_fut) = self.send_fut.as_mut() {
+            let r = ready!(send_fut.as_mut().poll_unpin(cx));
+            self.handle_write_result(r)?;
+        }
         Poll::Ready(Ok(()))
     }
 

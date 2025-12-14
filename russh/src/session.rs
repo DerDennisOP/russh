@@ -277,7 +277,10 @@ impl Encrypted {
             if data.len() as u32 <= channel.sender_window_size {
                 channel.sender_window_size -= data.len() as u32;
             }
-            if channel.sender_window_size < target / 2 {
+            // PERFORMANCE FIX: Send WINDOW_ADJUST immediately when window consumed
+            // Changed from target/2 to target*15/16 (93.75%) for high-throughput transfers
+            // This keeps the sender's window nearly full at all times
+            if channel.sender_window_size < target * 15 / 16 {
                 debug!(
                     "sender_window_size {:?}, target {:?}",
                     channel.sender_window_size, target
@@ -432,6 +435,15 @@ impl Encrypted {
     ) -> Result<(), crate::Error> {
         if let Some(channel) = self.channels.get_mut(&channel) {
             assert!(channel.confirmed);
+
+            // Limit pending_data to prevent unbounded memory growth
+            // INCREASED: Slow clients need larger buffer to prevent disconnects while waiting for WINDOW_ADJUST
+            // 4096 * 32KB (actual packet size) = 128MB buffer (sufficient for high latency/slow clients)
+            const MAX_PENDING_PACKETS: usize = 4096;
+            if channel.pending_data.len() >= MAX_PENDING_PACKETS {
+                return Err(crate::Error::Pending);
+            }
+
             if !channel.pending_data.is_empty() && is_rekeying {
                 channel.pending_data.push_back((buf0, None, 0));
                 return Ok(());
@@ -455,6 +467,15 @@ impl Encrypted {
     ) -> Result<(), crate::Error> {
         if let Some(channel) = self.channels.get_mut(&channel) {
             assert!(channel.confirmed);
+
+            // Limit pending_data to prevent unbounded memory growth
+            // INCREASED: Slow clients need larger buffer to prevent disconnects while waiting for WINDOW_ADJUST
+            // 4096 * 32KB (actual packet size) = 128MB buffer (sufficient for high latency/slow clients)
+            const MAX_PENDING_PACKETS: usize = 4096;
+            if channel.pending_data.len() >= MAX_PENDING_PACKETS {
+                return Err(crate::Error::Pending);
+            }
+
             if !channel.pending_data.is_empty() && is_rekeying {
                 channel.pending_data.push_back((buf0, Some(ext), 0));
                 return Ok(());

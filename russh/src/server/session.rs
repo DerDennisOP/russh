@@ -7,7 +7,7 @@ use kex::ServerKex;
 use log::debug;
 use negotiation::parse_kex_algo_list;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::mpsc::{channel, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
 use super::*;
@@ -21,7 +21,8 @@ use crate::{map_err, msg};
 pub struct Session {
     pub(crate) common: CommonSession<Arc<Config>>,
     pub(crate) sender: Handle,
-    pub(crate) receiver: Receiver<Msg>,
+    pub(crate) receiver: UnboundedReceiver<Msg>,
+    pub(crate) inbound_channel_receiver: Receiver<Msg>,
     pub(crate) target_window_size: u32,
     pub(crate) pending_reads: Vec<CryptoVec>,
     pub(crate) pending_len: u32,
@@ -95,7 +96,8 @@ impl From<(ChannelId, ChannelMsg)> for Msg {
 /// Handle to a session, used to send messages to a client outside of
 /// the request/response cycle.
 pub struct Handle {
-    pub(crate) sender: Sender<Msg>,
+    pub(crate) sender: UnboundedSender<Msg>,
+    pub(crate) inbound_channel_sender: Sender<Msg>,
     pub(crate) channel_buffer_size: usize,
 }
 
@@ -104,7 +106,6 @@ impl Handle {
     pub async fn data(&self, id: ChannelId, data: CryptoVec) -> Result<(), CryptoVec> {
         self.sender
             .send(Msg::Channel(id, ChannelMsg::Data { data }))
-            .await
             .map_err(|e| match e.0 {
                 Msg::Channel(_, ChannelMsg::Data { data }) => data,
                 _ => unreachable!(),
@@ -120,7 +121,6 @@ impl Handle {
     ) -> Result<(), CryptoVec> {
         self.sender
             .send(Msg::Channel(id, ChannelMsg::ExtendedData { ext, data }))
-            .await
             .map_err(|e| match e.0 {
                 Msg::Channel(_, ChannelMsg::ExtendedData { data, .. }) => data,
                 _ => unreachable!(),
@@ -131,7 +131,6 @@ impl Handle {
     pub async fn eof(&self, id: ChannelId) -> Result<(), ()> {
         self.sender
             .send(Msg::Channel(id, ChannelMsg::Eof))
-            .await
             .map_err(|_| ())
     }
 
@@ -139,7 +138,6 @@ impl Handle {
     pub async fn channel_success(&self, id: ChannelId) -> Result<(), ()> {
         self.sender
             .send(Msg::Channel(id, ChannelMsg::Success))
-            .await
             .map_err(|_| ())
     }
 
@@ -147,7 +145,6 @@ impl Handle {
     pub async fn channel_failure(&self, id: ChannelId) -> Result<(), ()> {
         self.sender
             .send(Msg::Channel(id, ChannelMsg::Failure))
-            .await
             .map_err(|_| ())
     }
 
@@ -155,7 +152,6 @@ impl Handle {
     pub async fn close(&self, id: ChannelId) -> Result<(), ()> {
         self.sender
             .send(Msg::Channel(id, ChannelMsg::Close))
-            .await
             .map_err(|_| ())
     }
 
@@ -165,7 +161,6 @@ impl Handle {
     pub async fn xon_xoff_request(&self, id: ChannelId, client_can_do: bool) -> Result<(), ()> {
         self.sender
             .send(Msg::Channel(id, ChannelMsg::XonXoff { client_can_do }))
-            .await
             .map_err(|_| ())
     }
 
@@ -173,7 +168,6 @@ impl Handle {
     pub async fn exit_status_request(&self, id: ChannelId, exit_status: u32) -> Result<(), ()> {
         self.sender
             .send(Msg::Channel(id, ChannelMsg::ExitStatus { exit_status }))
-            .await
             .map_err(|_| ())
     }
 
@@ -186,7 +180,6 @@ impl Handle {
                 address,
                 port,
             })
-            .await
             .map_err(|_| ())?;
 
         match reply_recv.await {
@@ -208,7 +201,6 @@ impl Handle {
                 address,
                 port,
             })
-            .await
             .map_err(|_| ())?;
         match reply_recv.await {
             Ok(true) => Ok(()),
@@ -230,7 +222,6 @@ impl Handle {
 
         self.sender
             .send(Msg::ChannelOpenAgent { channel_ref })
-            .await
             .map_err(|_| Error::SendError)?;
 
         self.wait_channel_confirmation(receiver, window_size_ref)
@@ -249,7 +240,6 @@ impl Handle {
 
         self.sender
             .send(Msg::ChannelOpenSession { channel_ref })
-            .await
             .map_err(|_| Error::SendError)?;
 
         self.wait_channel_confirmation(receiver, window_size_ref)
@@ -280,7 +270,6 @@ impl Handle {
                 originator_port,
                 channel_ref,
             })
-            .await
             .map_err(|_| Error::SendError)?;
         self.wait_channel_confirmation(receiver, window_size_ref)
             .await
@@ -300,7 +289,6 @@ impl Handle {
                 socket_path: socket_path.into(),
                 channel_ref,
             })
-            .await
             .map_err(|_| Error::SendError)?;
         self.wait_channel_confirmation(receiver, window_size_ref)
             .await
@@ -325,7 +313,6 @@ impl Handle {
                 originator_port,
                 channel_ref,
             })
-            .await
             .map_err(|_| Error::SendError)?;
         self.wait_channel_confirmation(receiver, window_size_ref)
             .await
@@ -344,7 +331,6 @@ impl Handle {
                 server_socket_path: server_socket_path.into(),
                 channel_ref,
             })
-            .await
             .map_err(|_| Error::SendError)?;
         self.wait_channel_confirmation(receiver, window_size_ref)
             .await
@@ -365,7 +351,6 @@ impl Handle {
                 originator_port,
                 channel_ref,
             })
-            .await
             .map_err(|_| Error::SendError)?;
         self.wait_channel_confirmation(receiver, window_size_ref)
             .await
@@ -388,7 +373,7 @@ impl Handle {
                     return Ok(Channel {
                         write_half: ChannelWriteHalf {
                             id,
-                            sender: self.sender.clone(),
+                            sender: self.inbound_channel_sender.clone(),
                             max_packet_size,
                             window_size: window_size_ref,
                         },
@@ -427,7 +412,6 @@ impl Handle {
                     lang_tag,
                 },
             ))
-            .await
             .map_err(|_| ())
     }
 
@@ -444,7 +428,6 @@ impl Handle {
                 description,
                 language_tag,
             })
-            .await
             .map_err(|_| Error::SendError)
     }
 }
@@ -506,6 +489,7 @@ impl Session {
         while !self.common.disconnected {
             self.common.received_data = false;
             let mut sent_keepalive = false;
+
             tokio::select! {
                 r = &mut reading => {
                     let (stream_read, mut buffer, mut opening_cipher) = match r {
@@ -556,6 +540,7 @@ impl Session {
                     return Err(crate::Error::InactivityTimeout.into());
                 }
                 msg = self.receiver.recv(), if !self.kex.active() => {
+                    // Process first message
                     match msg {
                         Some(Msg::Channel(id, ChannelMsg::Data { data })) => {
                             self.data(id, data)?;
@@ -631,6 +616,32 @@ impl Session {
                         }
                         None => {
                             debug!("self.receiver: received None");
+                        }
+                    }
+                }
+                // Process inbound channel messages (from bounded channel)
+                msg = self.inbound_channel_receiver.recv(), if !self.kex.active() => {
+                    match msg {
+                        Some(Msg::Channel(id, ChannelMsg::Data { data })) => {
+                            self.data(id, data)?;
+                        }
+                        Some(Msg::Channel(id, ChannelMsg::ExtendedData { ext, data })) => {
+                            self.extended_data(id, ext, data)?;
+                        }
+                        Some(Msg::Channel(id, ChannelMsg::Eof)) => {
+                            self.eof(id)?;
+                        }
+                        Some(Msg::Channel(id, ChannelMsg::Close)) => {
+                            self.close(id)?;
+                        }
+                        Some(Msg::Channel(id, msg)) => {
+                            debug!("Unexpected channel message from inbound channel: {:?}", msg);
+                        }
+                        Some(_) => {
+                            debug!("Unexpected non-channel message from inbound channel");
+                        }
+                        None => {
+                            debug!("inbound_channel_receiver: received None");
                         }
                     }
                 }

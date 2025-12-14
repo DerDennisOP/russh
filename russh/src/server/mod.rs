@@ -1015,9 +1015,15 @@ where
 
     // Reading SSH id and allocating a session.
     let mut stream = SshRead::new(stream);
-    let (sender, receiver) = tokio::sync::mpsc::channel(config.event_buffer_size);
+    // FIX: Use unbounded channel to prevent deadlock when forwarding data
+    // The bounded channel would fill up and block session_handle.data() calls,
+    // which in turn blocks the proxy's tokio::select! loop, creating a deadlock
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    // Separate bounded channel for creating data channels (maintains backpressure)
+    let (inbound_channel_sender, inbound_channel_receiver) = tokio::sync::mpsc::channel(config.channel_buffer_size);
     let handle = server::session::Handle {
         sender,
+        inbound_channel_sender,
         channel_buffer_size: config.channel_buffer_size,
     };
 
@@ -1026,6 +1032,7 @@ where
         target_window_size: common.config.window_size,
         common,
         receiver,
+        inbound_channel_receiver,
         sender: handle.clone(),
         pending_reads: Vec::new(),
         pending_len: 0,

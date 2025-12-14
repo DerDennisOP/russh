@@ -1108,7 +1108,9 @@ impl Session {
         while !self.common.disconnected {
             self.common.received_data = false;
             let mut sent_keepalive = false;
+
             tokio::select! {
+                biased;  // CRITICAL: Process reads before writes to prioritize WINDOW_ADJUST
                 r = &mut reading => {
                     let (stream_read, mut buffer, mut opening_cipher) = match r {
                         Ok((_, stream_read, buffer, opening_cipher)) => (stream_read, buffer, opening_cipher),

@@ -618,8 +618,9 @@ impl Session {
                 };
                 trace!("handler.data {ext:?} {channel_num:?}");
                 let data = map_err!(Bytes::decode(r))?;
-                let target = self.target_window_size;
 
+                // Adjust window FIRST (SSH protocol requirement)
+                let target = self.target_window_size;
                 if let Some(ref mut enc) = self.common.encrypted {
                     if enc.adjust_window_size(channel_num, &data, target)? {
                         let window = handler.adjust_window(channel_num, self.target_window_size);
@@ -629,23 +630,23 @@ impl Session {
                     }
                 }
                 self.flush()?;
+
+                // Send to application - uses BLOCKING send
+                // This is safe now because application (gputerraform) doesn't block
+                // when forwarding to client (uses tokio::spawn)
                 if let Some(ext) = ext {
                     if let Some(chan) = self.channels.get(&channel_num) {
-                        chan.send(ChannelMsg::ExtendedData {
+                        let _ = chan.send(ChannelMsg::ExtendedData {
                             ext,
                             data: CryptoVec::from_slice(&data),
-                        })
-                        .await
-                        .unwrap_or(())
+                        }).await;
                     }
                     handler.extended_data(channel_num, ext, &data, self).await
                 } else {
                     if let Some(chan) = self.channels.get(&channel_num) {
-                        chan.send(ChannelMsg::Data {
+                        let _ = chan.send(ChannelMsg::Data {
                             data: CryptoVec::from_slice(&data),
-                        })
-                        .await
-                        .unwrap_or(())
+                        }).await;
                     }
                     handler.data(channel_num, &data, self).await
                 }
@@ -1125,7 +1126,7 @@ impl Session {
 
         let (channel, reference) = Channel::new(
             sender_channel,
-            self.sender.sender.clone(),
+            self.sender.inbound_channel_sender.clone(),
             channel_params.recipient_maximum_packet_size,
             channel_params.recipient_window_size,
             self.common.config.channel_buffer_size,
