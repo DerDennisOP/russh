@@ -7,7 +7,7 @@ use kex::ServerKex;
 use log::debug;
 use negotiation::parse_kex_algo_list;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tokio::sync::mpsc::{channel, Receiver, Sender, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
 use super::*;
@@ -83,6 +83,7 @@ pub enum Msg {
         description: String,
         language_tag: String,
     },
+    QueryPendingLen(ChannelId, oneshot::Sender<Option<usize>>),
     Channel(ChannelId, ChannelMsg),
 }
 
@@ -98,7 +99,6 @@ impl From<(ChannelId, ChannelMsg)> for Msg {
 pub struct Handle {
     pub(crate) sender: UnboundedSender<Msg>,
     pub(crate) inbound_channel_sender: Sender<Msg>,
-    pub(crate) channel_buffer_size: usize,
 }
 
 impl Handle {
@@ -110,6 +110,14 @@ impl Handle {
                 Msg::Channel(_, ChannelMsg::Data { data }) => data,
                 _ => unreachable!(),
             })
+    }
+
+    /// Get the number of pending packets in the outbound buffer for a channel.
+    /// Returns None if the channel doesn't exist or the session isn't encrypted yet.
+    pub async fn pending_buffer_len(&self, id: ChannelId) -> Option<usize> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.sender.send(Msg::QueryPendingLen(id, tx)).ok()?;
+        rx.await.ok().flatten()
     }
 
     /// Send data to the session referenced by this handler.
@@ -216,7 +224,7 @@ impl Handle {
     /// confirmed that it allows agent forwarding. See
     /// [PROTOCOL.agent](https://datatracker.ietf.org/doc/html/draft-miller-ssh-agent).
     pub async fn channel_open_agent(&self) -> Result<Channel<Msg>, Error> {
-        let (sender, receiver) = channel(self.channel_buffer_size);
+        let (sender, receiver) = unbounded_channel();
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
@@ -234,7 +242,7 @@ impl Handle {
     /// usable when it's confirmed by the server, as indicated by the
     /// `confirmed` field of the corresponding `Channel`.
     pub async fn channel_open_session(&self) -> Result<Channel<Msg>, Error> {
-        let (sender, receiver) = channel(self.channel_buffer_size);
+        let (sender, receiver) = unbounded_channel();
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
@@ -258,7 +266,7 @@ impl Handle {
         originator_address: B,
         originator_port: u32,
     ) -> Result<Channel<Msg>, Error> {
-        let (sender, receiver) = channel(self.channel_buffer_size);
+        let (sender, receiver) = unbounded_channel();
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
@@ -280,7 +288,7 @@ impl Handle {
         &self,
         socket_path: A,
     ) -> Result<Channel<Msg>, Error> {
-        let (sender, receiver) = channel(self.channel_buffer_size);
+        let (sender, receiver) = unbounded_channel();
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
@@ -301,7 +309,7 @@ impl Handle {
         originator_address: B,
         originator_port: u32,
     ) -> Result<Channel<Msg>, Error> {
-        let (sender, receiver) = channel(self.channel_buffer_size);
+        let (sender, receiver) = unbounded_channel();
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
@@ -322,7 +330,7 @@ impl Handle {
         &self,
         server_socket_path: A,
     ) -> Result<Channel<Msg>, Error> {
-        let (sender, receiver) = channel(self.channel_buffer_size);
+        let (sender, receiver) = unbounded_channel();
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
@@ -341,7 +349,7 @@ impl Handle {
         originator_address: A,
         originator_port: u32,
     ) -> Result<Channel<Msg>, Error> {
-        let (sender, receiver) = channel(self.channel_buffer_size);
+        let (sender, receiver) = unbounded_channel();
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
@@ -358,7 +366,7 @@ impl Handle {
 
     async fn wait_channel_confirmation(
         &self,
-        mut receiver: Receiver<ChannelMsg>,
+        mut receiver: UnboundedReceiver<ChannelMsg>,
         window_size_ref: WindowSizeRef,
     ) -> Result<Channel<Msg>, Error> {
         loop {
@@ -606,6 +614,10 @@ impl Session {
                         Some(Msg::CancelTcpIpForward { address, port, reply_channel }) => {
                             self.cancel_tcpip_forward(&address, port, reply_channel)?;
                         }
+                        Some(Msg::QueryPendingLen(channel_id, reply_channel)) => {
+                            let len = self.pending_data_len(channel_id);
+                            let _ = reply_channel.send(Some(len));
+                        }
                         Some(Msg::Disconnect {reason, description, language_tag}) => {
                             self.common.disconnect(reason, &description, &language_tag)?;
                         }
@@ -634,7 +646,7 @@ impl Session {
                         Some(Msg::Channel(id, ChannelMsg::Close)) => {
                             self.close(id)?;
                         }
-                        Some(Msg::Channel(id, msg)) => {
+                        Some(Msg::Channel(_id, msg)) => {
                             debug!("Unexpected channel message from inbound channel: {:?}", msg);
                         }
                         Some(_) => {
@@ -773,6 +785,14 @@ impl Session {
             enc.has_pending_data(channel)
         } else {
             false
+        }
+    }
+
+    pub fn pending_data_len(&self, channel: ChannelId) -> usize {
+        if let Some(ref enc) = self.common.encrypted {
+            enc.pending_data_len(channel)
+        } else {
+            0
         }
     }
 
@@ -977,6 +997,21 @@ impl Session {
         if let Some(ref mut enc) = self.common.encrypted {
             self.open_global_requests
                 .push_back(GlobalRequestResponse::Keepalive);
+            push_packet!(enc.write, {
+                msg::GLOBAL_REQUEST.encode(&mut enc.write)?;
+                "keepalive@openssh.com".encode(&mut enc.write)?;
+                want_reply.encode(&mut enc.write)?;
+            })
+        }
+        Ok(())
+    }
+
+    /// Ping the client with a Keepalive and get a notification when the client responds.
+    pub fn send_ping(&mut self, reply_channel: oneshot::Sender<()>) -> Result<(), Error> {
+        let want_reply = u8::from(true);
+        if let Some(ref mut enc) = self.common.encrypted {
+            self.open_global_requests
+                .push_back(GlobalRequestResponse::Ping(reply_channel));
             push_packet!(enc.write, {
                 msg::GLOBAL_REQUEST.encode(&mut enc.write)?;
                 "keepalive@openssh.com".encode(&mut enc.write)?;

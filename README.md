@@ -1,7 +1,7 @@
 # Russh
 
 [![Rust](https://github.com/warp-tech/russh/actions/workflows/rust.yml/badge.svg)](https://github.com/warp-tech/russh/actions/workflows/rust.yml)  <!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
-[![All Contributors](https://img.shields.io/badge/all_contributors-70-orange.svg?style=flat-square)](#contributors-)
+[![All Contributors](https://img.shields.io/badge/all_contributors-73-orange.svg?style=flat-square)](#contributors-)
 <!-- ALL-CONTRIBUTORS-BADGE:END -->
 
 Low-level Tokio SSH2 client and server implementation.
@@ -115,6 +115,8 @@ This is a fork of [Thrussh](https://nest.pijul.com/pijul/thrussh) by Pierre-Éti
   * Uses `russh::server` for reverse forwarding connections, local forwarding tunnels, and the `ratatui` based admin interface.
 * [Motor OS](https://github.com/moturus/motor-os) -  A new Rust-based operating system for VMs.
   * Uses `russh::server` as the base for its own [SSH Server](https://github.com/moturus/motor-os/tree/main/src/bin/russhd). 
+* [Cubic VM](https://github.com/cubic-vm/cubic) - A lightweight command-line manager for virtual machines.
+  * Uses `russh::client` and `russh_sftp::client` to access the virtual machine instances.
 
 ## Contributors ✨
 
@@ -214,6 +216,11 @@ Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/d
       <td align="center" valign="top" width="14.28%"><a href="https://the-b.org/"><img src="https://avatars.githubusercontent.com/u/50407?v=4?s=100" width="100px;" alt="Kenny Root"/><br /><sub><b>Kenny Root</b></sub></a><br /><a href="https://github.com/Eugeny/russh/commits?author=kruton" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/moshevds"><img src="https://avatars.githubusercontent.com/u/1497288?v=4?s=100" width="100px;" alt="Môshe van der Sterre"/><br /><sub><b>Môshe van der Sterre</b></sub></a><br /><a href="https://github.com/Eugeny/russh/commits?author=moshevds" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/Lucy-dot-dot"><img src="https://avatars.githubusercontent.com/u/178554709?v=4?s=100" width="100px;" alt="Lucy"/><br /><sub><b>Lucy</b></sub></a><br /><a href="https://github.com/Eugeny/russh/commits?author=Lucy-dot-dot" title="Code">💻</a></td>
+    </tr>
+    <tr>
+      <td align="center" valign="top" width="14.28%"><a href="http://mbund.dev"><img src="https://avatars.githubusercontent.com/u/25110595?v=4?s=100" width="100px;" alt="Mark Bundschuh"/><br /><sub><b>Mark Bundschuh</b></sub></a><br /><a href="https://github.com/Eugeny/russh/commits?author=mbund" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/tayu0110"><img src="https://avatars.githubusercontent.com/u/69729315?v=4?s=100" width="100px;" alt="tayu0110"/><br /><sub><b>tayu0110</b></sub></a><br /><a href="https://github.com/Eugeny/russh/commits?author=tayu0110" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://cubic-vm.org"><img src="https://avatars.githubusercontent.com/u/155455820?v=4?s=100" width="100px;" alt="Roger Knecht"/><br /><sub><b>Roger Knecht</b></sub></a><br /><a href="https://github.com/Eugeny/russh/commits?author=rogkne" title="Code">💻</a></td>
     </tr>
   </tbody>
 </table>

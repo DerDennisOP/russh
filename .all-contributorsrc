@@ -634,6 +634,33 @@
       "contributions": [
         "code"
       ]
+    },
+    {
+      "login": "mbund",
+      "name": "Mark Bundschuh",
+      "avatar_url": "https://avatars.githubusercontent.com/u/25110595?v=4",
+      "profile": "http://mbund.dev",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "tayu0110",
+      "name": "tayu0110",
+      "avatar_url": "https://avatars.githubusercontent.com/u/69729315?v=4",
+      "profile": "https://github.com/tayu0110",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "rogkne",
+      "name": "Roger Knecht",
+      "avatar_url": "https://avatars.githubusercontent.com/u/155455820?v=4",
+      "profile": "https://cubic-vm.org",
+      "contributions": [
+        "code"
+      ]
     }
   ],
   "contributorsPerLine": 7,

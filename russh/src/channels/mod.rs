@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{Sender, UnboundedReceiver};
 use tokio::sync::{Mutex, Notify};
 
 use crate::{ChannelId, ChannelOpenFailure, CryptoVec, Error, Pty, Sig};
@@ -141,7 +141,7 @@ impl WindowSizeRef {
 ///
 /// Allows you to read from a channel without borrowing the session
 pub struct ChannelReadHalf {
-    pub(crate) receiver: Receiver<ChannelMsg>,
+    pub(crate) receiver: UnboundedReceiver<ChannelMsg>,
 }
 
 impl std::fmt::Debug for ChannelReadHalf {
@@ -406,9 +406,10 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
         sender: Sender<S>,
         max_packet_size: u32,
         window_size: u32,
-        channel_buffer_size: usize,
     ) -> (Self, ChannelRef) {
-        let (tx, rx) = tokio::sync::mpsc::channel(channel_buffer_size);
+        // CRITICAL FIX: Use unbounded channel to prevent event loop blocking
+        // Backpressure is handled by the SSH window mechanism, not channel bounds
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let window_size = WindowSizeRef::new(window_size);
         let read_half = ChannelReadHalf { receiver: rx };
         let write_half = ChannelWriteHalf {
