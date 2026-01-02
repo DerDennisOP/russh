@@ -188,6 +188,7 @@ pub enum Msg {
         description: String,
         language_tag: String,
     },
+    QueryPendingLen(ChannelId, oneshot::Sender<Option<usize>>),
     Channel(ChannelId, ChannelMsg),
     Rekey,
     AwaitExtensionInfo {
@@ -257,7 +258,6 @@ pub struct Handle<H: Handler> {
     sender: Sender<Msg>,
     receiver: UnboundedReceiver<Reply>,
     join: russh_util::runtime::JoinHandle<Result<(), H::Error>>,
-    channel_buffer_size: usize,
 }
 
 impl<H: Handler> Drop for Handle<H> {
@@ -503,7 +503,7 @@ impl<H: Handler> Handle<H> {
     /// Wait for confirmation that a channel is open
     async fn wait_channel_confirmation(
         &self,
-        mut receiver: Receiver<ChannelMsg>,
+        mut receiver: UnboundedReceiver<ChannelMsg>,
         window_size_ref: WindowSizeRef,
     ) -> Result<Channel<Msg>, crate::Error> {
         loop {
@@ -605,7 +605,9 @@ impl<H: Handler> Handle<H> {
     /// usable when it's confirmed by the server, as indicated by the
     /// `confirmed` field of the corresponding `Channel`.
     pub async fn channel_open_session(&self) -> Result<Channel<Msg>, crate::Error> {
-        let (sender, receiver) = channel(self.channel_buffer_size);
+        // CRITICAL FIX: Use unbounded channel to prevent event loop blocking
+        // Backpressure is handled by the SSH window mechanism, not channel bounds
+        let (sender, receiver) = unbounded_channel();
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
@@ -623,7 +625,7 @@ impl<H: Handler> Handle<H> {
         originator_address: A,
         originator_port: u32,
     ) -> Result<Channel<Msg>, crate::Error> {
-        let (sender, receiver) = channel(self.channel_buffer_size);
+        let (sender, receiver) = unbounded_channel();
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
@@ -654,7 +656,7 @@ impl<H: Handler> Handle<H> {
         originator_address: B,
         originator_port: u32,
     ) -> Result<Channel<Msg>, crate::Error> {
-        let (sender, receiver) = channel(self.channel_buffer_size);
+        let (sender, receiver) = unbounded_channel();
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
@@ -676,7 +678,7 @@ impl<H: Handler> Handle<H> {
         &self,
         socket_path: S,
     ) -> Result<Channel<Msg>, crate::Error> {
-        let (sender, receiver) = channel(self.channel_buffer_size);
+        let (sender, receiver) = unbounded_channel();
         let channel_ref = ChannelRef::new(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
@@ -863,6 +865,14 @@ impl<H: Handler> Handle<H> {
             .await
             .map_err(|_| Error::SendError)
     }
+
+    /// Get the number of pending packets in the outbound buffer for a channel.
+    /// Returns None if the channel doesn't exist or the session isn't encrypted yet.
+    pub async fn pending_buffer_len(&self, id: ChannelId) -> Option<usize> {
+        let (tx, rx) = oneshot::channel();
+        self.sender.send(Msg::QueryPendingLen(id, tx)).await.ok()?;
+        rx.await.ok().flatten()
+    }
 }
 
 impl<H: Handler> Future for Handle<H> {
@@ -927,7 +937,7 @@ where
     let mut stream = SshRead::new(stream);
     let sshid = stream.read_ssh_id().await?;
 
-    let (handle_sender, session_receiver) = channel(10);
+    let (handle_sender, session_receiver) = channel(config.channel_buffer_size);
     let (session_sender, handle_receiver) = unbounded_channel();
     if config.maximum_packet_size > 65535 {
         error!(
@@ -935,7 +945,6 @@ where
             config.maximum_packet_size
         );
     }
-    let channel_buffer_size = config.channel_buffer_size;
     let mut session = Session::new(
         config.window_size,
         CommonSession {
@@ -973,7 +982,6 @@ where
         sender: handle_sender,
         receiver: handle_receiver,
         join,
-        channel_buffer_size,
     })
 }
 
@@ -1014,7 +1022,7 @@ impl Session {
         receiver: Receiver<Msg>,
         sender: UnboundedSender<Reply>,
     ) -> Self {
-        let (inbound_channel_sender, inbound_channel_receiver) = channel(10);
+        let (inbound_channel_sender, inbound_channel_receiver) = channel(common.config.channel_buffer_size);
         Self {
             common,
             receiver,
@@ -1303,6 +1311,10 @@ impl Session {
                 reply_channel,
                 socket_path,
             } => self.cancel_streamlocal_forward(reply_channel, &socket_path)?,
+            Msg::QueryPendingLen(channel_id, reply_channel) => {
+                let len = self.pending_data_len(channel_id);
+                let _ = reply_channel.send(Some(len));
+            }
             Msg::Disconnect {
                 reason,
                 description,
@@ -1673,8 +1685,6 @@ pub struct Config {
     pub window_size: u32,
     /// The maximal size of a single packet.
     pub maximum_packet_size: u32,
-    /// Buffer size for each channel (a number of unprocessed messages to store before propagating backpressure to the TCP stream)
-    pub channel_buffer_size: usize,
     /// Lists of preferred algorithms.
     pub preferred: negotiation::Preferred,
     /// Time after which the connection is garbage-collected.
@@ -1689,6 +1699,8 @@ pub struct Config {
     pub gex: GexParams,
     /// If active, invoke `set_nodelay(true)` on the ssh socket; disabled by default (i.e. Nagle's algorithm is active).
     pub nodelay: bool,
+    /// The size of the internal channel buffer for messages.
+    pub channel_buffer_size: usize,
 }
 
 impl Default for Config {
@@ -1702,7 +1714,6 @@ impl Default for Config {
             limits: Limits::default(),
             window_size: 2097152,
             maximum_packet_size: 32768,
-            channel_buffer_size: 100,
             preferred: Default::default(),
             inactivity_timeout: None,
             keepalive_interval: None,
@@ -1710,6 +1721,7 @@ impl Default for Config {
             anonymous: false,
             gex: Default::default(),
             nodelay: false,
+            channel_buffer_size: 10,
         }
     }
 }

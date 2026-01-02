@@ -81,8 +81,6 @@ pub struct Config {
     pub window_size: u32,
     /// The maximal size of a single packet.
     pub maximum_packet_size: u32,
-    /// Buffer size for each channel (a number of unprocessed messages to store before propagating backpressure to the TCP stream)
-    pub channel_buffer_size: usize,
     /// Internal event buffer size
     pub event_buffer_size: usize,
     /// Lists of preferred algorithms.
@@ -97,6 +95,8 @@ pub struct Config {
     pub keepalive_max: usize,
     /// If active, invoke `set_nodelay(true)` on client sockets; disabled by default (i.e. Nagle's algorithm is active).
     pub nodelay: bool,
+    /// The size of the internal channel buffer for messages.
+    pub channel_buffer_size: usize,
 }
 
 impl Default for Config {
@@ -113,7 +113,6 @@ impl Default for Config {
             keys: Vec::new(),
             window_size: 2097152,
             maximum_packet_size: 32768,
-            channel_buffer_size: 100,
             event_buffer_size: 10,
             limits: Limits::default(),
             preferred: Default::default(),
@@ -122,6 +121,7 @@ impl Default for Config {
             keepalive_interval: None,
             keepalive_max: 3,
             nodelay: false,
+            channel_buffer_size: 1024,
         }
     }
 }
@@ -140,7 +140,6 @@ impl Debug for Config {
             .field("keys", &"***")
             .field("window_size", &self.window_size)
             .field("maximum_packet_size", &self.maximum_packet_size)
-            .field("channel_buffer_size", &self.channel_buffer_size)
             .field("event_buffer_size", &self.event_buffer_size)
             .field("limits", &self.limits)
             .field("preferred", &self.preferred)
@@ -1020,11 +1019,10 @@ where
     // which in turn blocks the proxy's tokio::select! loop, creating a deadlock
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     // Separate bounded channel for creating data channels (maintains backpressure)
-    let (inbound_channel_sender, inbound_channel_receiver) = tokio::sync::mpsc::channel(config.channel_buffer_size);
+    let (inbound_channel_sender, inbound_channel_receiver) = tokio::sync::mpsc::channel(10);
     let handle = server::session::Handle {
         sender,
         inbound_channel_sender,
-        channel_buffer_size: config.channel_buffer_size,
     };
 
     let common = read_ssh_id(config, &mut stream).await?;

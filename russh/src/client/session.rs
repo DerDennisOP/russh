@@ -514,6 +514,14 @@ impl Session {
         }
     }
 
+    pub fn pending_data_len(&self, channel: ChannelId) -> usize {
+        if let Some(ref enc) = self.common.encrypted {
+            enc.pending_data_len(channel)
+        } else {
+            0
+        }
+    }
+
     pub fn sender_window_size(&self, channel: ChannelId) -> usize {
         if let Some(ref enc) = self.common.encrypted {
             enc.sender_window_size(channel)

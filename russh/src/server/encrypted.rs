@@ -603,7 +603,7 @@ impl Session {
             msg::CHANNEL_EOF => {
                 let channel_num = map_err!(ChannelId::decode(r))?;
                 if let Some(chan) = self.channels.get(&channel_num) {
-                    chan.send(ChannelMsg::Eof).await.unwrap_or(())
+                    chan.send(ChannelMsg::Eof).unwrap_or(())
                 }
                 debug!("handler.channel_eof {channel_num:?}");
                 handler.channel_eof(channel_num, self).await
@@ -619,7 +619,29 @@ impl Session {
                 trace!("handler.data {ext:?} {channel_num:?}");
                 let data = map_err!(Bytes::decode(r))?;
 
-                // Adjust window FIRST (SSH protocol requirement)
+                // Send to application FIRST, then adjust window
+                // This prevents deadlock: if application channel blocks, we don't send
+                // WINDOW_ADJUST, which applies backpressure to remote client
+                if let Some(ext) = ext {
+                    if let Some(chan) = self.channels.get(&channel_num) {
+                        let _ = chan.send(ChannelMsg::ExtendedData {
+                            ext,
+                            data: CryptoVec::from_slice(&data),
+                        });
+                    }
+                    handler.extended_data(channel_num, ext, &data, self).await?
+                } else {
+                    if let Some(chan) = self.channels.get(&channel_num) {
+                        let _ = chan.send(ChannelMsg::Data {
+                            data: CryptoVec::from_slice(&data),
+                        });
+                    }
+                    handler.data(channel_num, &data, self).await?
+                }
+
+                // NOW adjust window - only after we've successfully queued the data
+                // If the send() above blocked, it means application is slow, so we
+                // delay WINDOW_ADJUST which tells client to slow down
                 let target = self.target_window_size;
                 if let Some(ref mut enc) = self.common.encrypted {
                     if enc.adjust_window_size(channel_num, &data, target)? {
@@ -630,26 +652,7 @@ impl Session {
                     }
                 }
                 self.flush()?;
-
-                // Send to application - uses BLOCKING send
-                // This is safe now because application (gputerraform) doesn't block
-                // when forwarding to client (uses tokio::spawn)
-                if let Some(ext) = ext {
-                    if let Some(chan) = self.channels.get(&channel_num) {
-                        let _ = chan.send(ChannelMsg::ExtendedData {
-                            ext,
-                            data: CryptoVec::from_slice(&data),
-                        }).await;
-                    }
-                    handler.extended_data(channel_num, ext, &data, self).await
-                } else {
-                    if let Some(chan) = self.channels.get(&channel_num) {
-                        let _ = chan.send(ChannelMsg::Data {
-                            data: CryptoVec::from_slice(&data),
-                        }).await;
-                    }
-                    handler.data(channel_num, &data, self).await
-                }
+                Ok(())
             }
 
             msg::CHANNEL_WINDOW_ADJUST => {
@@ -670,9 +673,7 @@ impl Session {
                 if let Some(chan) = self.channels.get(&channel_num) {
                     chan.window_size().update(new_size).await;
 
-                    chan.send(ChannelMsg::WindowAdjusted { new_size })
-                        .await
-                        .unwrap_or(())
+                    chan.send(ChannelMsg::WindowAdjusted { new_size }).unwrap_or(())
                 }
                 debug!("handler.window_adjusted {channel_num:?}");
                 handler.window_adjusted(channel_num, new_size, self).await
@@ -700,9 +701,7 @@ impl Session {
                             id: local_id,
                             max_packet_size: msg.maximum_packet_size,
                             window_size: msg.initial_window_size,
-                        })
-                        .await
-                        .unwrap_or(());
+                        }).unwrap_or(());
                 } else {
                     error!("no channel for id {local_id:?}");
                 }
@@ -770,7 +769,7 @@ impl Session {
                                     pix_height,
                                     terminal_modes: modes.into(),
                                 })
-                                .await;
+                                ;
                         }
 
                         debug!("handler.pty_request {channel_num:?}");
@@ -803,7 +802,7 @@ impl Session {
                                     x11_authentication_protocol: x11_auth_protocol.clone(),
                                     x11_screen_number,
                                 })
-                                .await;
+                                ;
                         }
                         debug!("handler.x11_request {channel_num:?}");
                         handler
@@ -828,7 +827,7 @@ impl Session {
                                     variable_name: env_variable.clone(),
                                     variable_value: env_value.clone(),
                                 })
-                                .await;
+                                ;
                         }
 
                         debug!("handler.env_request {channel_num:?}");
@@ -840,7 +839,7 @@ impl Session {
                         if let Some(chan) = self.channels.get(&channel_num) {
                             let _ = chan
                                 .send(ChannelMsg::RequestShell { want_reply: true })
-                                .await;
+                                ;
                         }
                         debug!("handler.shell_request {channel_num:?}");
                         handler.shell_request(channel_num, self).await
@@ -849,7 +848,7 @@ impl Session {
                         if let Some(chan) = self.channels.get(&channel_num) {
                             let _ = chan
                                 .send(ChannelMsg::AgentForward { want_reply: true })
-                                .await;
+                                ;
                         }
                         debug!("handler.agent_request {channel_num:?}");
 
@@ -869,7 +868,7 @@ impl Session {
                                     want_reply: true,
                                     command: req.to_vec(),
                                 })
-                                .await;
+                                ;
                         }
                         debug!("handler.exec_request {channel_num:?}");
                         handler.exec_request(channel_num, &req, self).await
@@ -883,7 +882,7 @@ impl Session {
                                     want_reply: true,
                                     name: name.clone(),
                                 })
-                                .await;
+                                ;
                         }
                         debug!("handler.subsystem_request {channel_num:?}");
                         handler.subsystem_request(channel_num, &name, self).await
@@ -902,7 +901,7 @@ impl Session {
                                     pix_width,
                                     pix_height,
                                 })
-                                .await;
+                                ;
                         }
 
                         debug!("handler.window_change {channel_num:?}");
@@ -920,11 +919,9 @@ impl Session {
                     "signal" => {
                         let signal = Sig::from_name(&map_err!(String::decode(r))?);
                         if let Some(chan) = self.channels.get(&channel_num) {
-                            chan.send(ChannelMsg::Signal {
+                            let _ = chan.send(ChannelMsg::Signal {
                                 signal: signal.clone(),
-                            })
-                            .await
-                            .unwrap_or(())
+                            });
                         }
                         debug!("handler.signal {channel_num:?} {signal:?}");
                         handler.signal(channel_num, signal, self).await
@@ -1034,7 +1031,6 @@ impl Session {
                 if let Some(channel_sender) = self.channels.remove(&channel_num) {
                     channel_sender
                         .send(ChannelMsg::OpenFailure(reason))
-                        .await
                         .map_err(|_| crate::Error::SendError)?;
                 }
 
@@ -1045,6 +1041,9 @@ impl Session {
                 match self.open_global_requests.pop_front() {
                     Some(GlobalRequestResponse::Keepalive) => {
                         // ignore keepalives
+                    }
+                    Some(GlobalRequestResponse::Ping(return_channel)) => {
+                        let _ = return_channel.send(());
                     }
                     Some(GlobalRequestResponse::TcpIpForward(return_channel)) => {
                         let result = if r.is_finished() {
@@ -1075,6 +1074,9 @@ impl Session {
                 match self.open_global_requests.pop_front() {
                     Some(GlobalRequestResponse::Keepalive) => {
                         // ignore keepalives
+                    }
+                    Some(GlobalRequestResponse::Ping(return_channel)) => {
+                        let _ = return_channel.send(());
                     }
                     Some(GlobalRequestResponse::TcpIpForward(return_channel)) => {
                         let _ = return_channel.send(None);
@@ -1129,7 +1131,6 @@ impl Session {
             self.sender.inbound_channel_sender.clone(),
             channel_params.recipient_maximum_packet_size,
             channel_params.recipient_window_size,
-            self.common.config.channel_buffer_size,
         );
 
         match &msg.typ {

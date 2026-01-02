@@ -372,6 +372,14 @@ impl Encrypted {
         }
     }
 
+    pub fn pending_data_len(&self, channel: ChannelId) -> usize {
+        if let Some(channel) = self.channels.get(&channel) {
+            channel.pending_data.len()
+        } else {
+            0
+        }
+    }
+
     /// Push the largest amount of `&buf0[from..]` that can fit into
     /// the window, dividing it into packets if it is too large, and
     /// return the length that was written.
